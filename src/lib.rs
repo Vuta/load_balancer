@@ -6,10 +6,9 @@ use rand::seq::IndexedRandom;
 use std::pin::Pin;
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering}
+    atomic::{AtomicUsize, Ordering},
 };
 
-#[allow(dead_code)]
 #[derive(Debug)]
 enum Algo {
     RoundRobin(Arc<AtomicUsize>),
@@ -41,7 +40,11 @@ impl LoadBalancer {
             _ => panic!("unsupported algorithm"),
         };
 
-        Self { algo, client, backends }
+        Self {
+            algo,
+            client,
+            backends,
+        }
     }
 
     fn select(&self) -> &Backend {
@@ -50,13 +53,10 @@ impl LoadBalancer {
                 let len = &self.backends.len();
                 let i = rc.load(Ordering::Relaxed);
 
-                rc.store(
-                    (rc.load(Ordering::Relaxed) + 1) % len,
-                    Ordering::Relaxed,
-                );
+                rc.store((rc.load(Ordering::Relaxed) + 1) % len, Ordering::Relaxed);
 
                 &self.backends[i]
-            },
+            }
             Algo::LeastConnection => {
                 let min = &self
                     .backends
