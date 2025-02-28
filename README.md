@@ -2,7 +2,8 @@
 
 TODOs:
 
-- [ ] Least connections
+- [x] Round robin
+- [x] Least connections
 - [ ] Health check
 - [ ] Error handling
 - [ ] Add tests

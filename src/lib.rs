@@ -4,12 +4,15 @@ use hyper::service::Service;
 use hyper::{Request, Response};
 use rand::seq::IndexedRandom;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering}
+};
 
 #[allow(dead_code)]
 #[derive(Debug)]
 enum Algo {
-    RoundRobin, // TODO: implement RR
+    RoundRobin(Arc<AtomicUsize>),
     LeastConnection,
 }
 
@@ -33,7 +36,7 @@ impl LoadBalancer {
         }
 
         let algo = match algo.as_str() {
-            "round_robin" => Algo::RoundRobin,
+            "round_robin" => Algo::RoundRobin(Arc::new(AtomicUsize::new(0))),
             "least_connection" => Algo::LeastConnection,
             _ => panic!("unsupported algorithm"),
         };
@@ -42,10 +45,18 @@ impl LoadBalancer {
     }
 
     fn select(&self) -> &Backend {
-        match self.algo {
-            Algo::RoundRobin => {
-                todo!();
-            }
+        match &self.algo {
+            Algo::RoundRobin(rc) => {
+                let len = &self.backends.len();
+                let i = rc.load(Ordering::Relaxed);
+
+                rc.store(
+                    (rc.load(Ordering::Relaxed) + 1) % len,
+                    Ordering::Relaxed,
+                );
+
+                &self.backends[i]
+            },
             Algo::LeastConnection => {
                 let min = &self
                     .backends

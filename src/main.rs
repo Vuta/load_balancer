@@ -10,7 +10,7 @@ use load_balancer::LoadBalancer;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(default_value_t = String::from("round_robin"))]
+    #[arg(short, long, default_value_t = String::from("round_robin"))]
     algo: String,
     #[arg(short, long, default_value_t = 1)]
     count: u8,
