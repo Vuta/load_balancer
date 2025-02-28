@@ -8,8 +8,10 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
+use tokio::time::{sleep, Instant, Duration};
 
 use clap::Parser;
+use rand::Rng;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -21,7 +23,15 @@ struct Args {
 async fn hello(
     req: Request<impl hyper::body::Body + std::fmt::Debug>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
-    println!("{:?}", req);
+    let now = Instant::now();
+    let x = {
+        let mut rng = rand::rng();
+        rng.random_range(0..=2000)
+    };
+
+    sleep(Duration::from_millis(x)).await;
+
+    println!("{:?} took {} ms", req, now.elapsed().as_millis());
 
     Ok(Response::new(Full::new(Bytes::from("Hello World!"))))
 }
