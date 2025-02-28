@@ -9,6 +9,15 @@ use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short, long)]
+    port: u16,
+}
+
 async fn hello(
     req: Request<impl hyper::body::Body + std::fmt::Debug>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
@@ -19,7 +28,8 @@ async fn hello(
 
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let addr: SocketAddr = ([127, 0, 0, 1], 8080).into();
+    let args = Args::parse();
+    let addr: SocketAddr = ([127, 0, 0, 1], args.port).into();
 
     let listener = TcpListener::bind(addr).await?;
     println!("Listening on http://{}", addr);

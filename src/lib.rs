@@ -4,27 +4,68 @@ use hyper::service::Service;
 use hyper::{Request, Response};
 use rand::seq::IndexedRandom;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-const NUM_OF_BACKENDS: usize = 1;
+#[allow(dead_code)]
+#[derive(Debug)]
+enum Algo {
+    RoundRobin, // TODO: implement RR
+    LeastConnection,
+}
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LoadBalancer {
+    algo: Algo,
     client: reqwest::Client,
     backends: Vec<Backend>,
 }
 
 impl LoadBalancer {
-    pub fn new() -> Self {
+    pub fn new(algo: String, num_backends: u8) -> Self {
         let mut backends: Vec<Backend> = Vec::new();
         let client = reqwest::Client::new();
 
-        for i in 0..NUM_OF_BACKENDS {
+        for i in 0..num_backends {
             backends.push(Backend {
                 host: format!("127.0.0.1:808{}", i),
+                inflights: AtomicUsize::new(0),
             });
         }
 
-        Self { client, backends }
+        let algo = match algo.as_str() {
+            "round_robin" => Algo::RoundRobin,
+            "least_connection" => Algo::LeastConnection,
+            _ => panic!("unsupported algorithm"),
+        };
+
+        Self { algo, client, backends }
+    }
+
+    fn select(&self) -> &Backend {
+        match self.algo {
+            Algo::RoundRobin => {
+                todo!();
+            }
+            Algo::LeastConnection => {
+                let min = &self
+                    .backends
+                    .iter()
+                    .map(|be| be.inflights.load(Ordering::Relaxed))
+                    .min()
+                    .unwrap();
+
+                let bes: &Vec<&Backend> = &self
+                    .backends
+                    .iter()
+                    .filter(|be| be.inflights.load(Ordering::Relaxed) == *min)
+                    .collect();
+
+                let mut rng = rand::rng();
+                let backend = bes.choose(&mut rng).unwrap();
+
+                backend
+            }
+        }
     }
 }
 
@@ -34,16 +75,20 @@ impl Service<Request<IncomingBody>> for LoadBalancer {
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn call(&self, req: Request<IncomingBody>) -> Self::Future {
-        let mut rng = rand::rng();
-        let backend = self.backends.choose(&mut rng).unwrap();
+        let backend = self.select();
         let uri = format!("http://{}{}", backend.host, req.uri());
+
         let request_builder = self
             .client
             .request(req.method().clone(), uri)
             .headers(req.headers().clone())
             .body(reqwest::Body::wrap(req));
 
-        Box::pin(async {
+        let _ = backend.inflights.fetch_add(1, Ordering::Relaxed);
+
+        println!("{:?}", backend);
+
+        let tsk = Box::pin(async {
             let backend_res = request_builder.send().await.unwrap();
 
             let mut builder = Response::builder();
@@ -57,11 +102,16 @@ impl Service<Request<IncomingBody>> for LoadBalancer {
                 .unwrap();
 
             Ok(response)
-        })
+        });
+
+        let _ = backend.inflights.fetch_sub(1, Ordering::Relaxed);
+
+        tsk
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Backend {
     host: String,
+    inflights: AtomicUsize,
 }
