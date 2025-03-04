@@ -126,3 +126,40 @@ struct Backend {
     host: String,
     inflights: AtomicUsize,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new() {
+        let lb = LoadBalancer::new(String::from("round_robin"), 1);
+
+        assert_eq!(lb.backends.len(), 1);
+        assert!(matches!(lb.algo, Algo::RoundRobin(_)));
+    }
+
+    #[test]
+    fn select_least_connection() {
+        let mut lb = LoadBalancer::new(String::from("least_connection"), 2);
+
+        {
+            let backend = &mut lb.backends[1];
+            backend.inflights = 1.into();
+            assert_eq!(backend.host, "127.0.0.1:8081");
+        }
+
+        let backend = lb.select();
+        assert_eq!(backend.inflights.load(Ordering::Relaxed), 0);
+        assert_eq!(backend.host, "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn select_round_robin() {
+        let lb = LoadBalancer::new(String::from("round_robin"), 2);
+
+        assert_eq!(lb.select().host, "127.0.0.1:8080");
+        assert_eq!(lb.select().host, "127.0.0.1:8081");
+        assert_eq!(lb.select().host, "127.0.0.1:8080");
+    }
+}
