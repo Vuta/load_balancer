@@ -28,9 +28,23 @@ impl LoadBalancer {
         let client = reqwest::Client::new();
 
         for i in 0..num_backends {
+            let host = format!("127.0.0.1:808{}", i);
+            let res = reqwest::blocking::get(format!("http://{}/health", host));
+
+            let healthy = match res {
+                Ok(res) => {
+                    match res.status() {
+                        reqwest::StatusCode::OK => true,
+                        _ => false,
+                    }
+                }
+                Err(_) => false,
+            };
+
             backends.push(Backend {
-                host: format!("127.0.0.1:808{}", i),
+                host: host,
                 inflights: AtomicUsize::new(0),
+                healthy: healthy,
             });
         }
 
@@ -47,34 +61,39 @@ impl LoadBalancer {
         }
     }
 
-    fn select(&self) -> &Backend {
+    fn select(&self) -> Option<&Backend> {
+        let backends: &Vec<&Backend> = &self.backends.iter().filter(|be| be.healthy == true).collect();
+
+        if backends.len() == 0 {
+            return None;
+        }
+
         match &self.algo {
             Algo::RoundRobin(rc) => {
-                let len = &self.backends.len();
-                let i = rc.load(Ordering::Relaxed);
+                let len = backends.len();
+                let i = rc.load(Ordering::Relaxed) % len;
 
                 rc.store((rc.load(Ordering::Relaxed) + 1) % len, Ordering::Relaxed);
 
-                &self.backends[i]
+                Some(&backends[i])
             }
             Algo::LeastConnection => {
-                let min = &self
-                    .backends
-                    .iter()
+                let min = backends
+                    .into_iter()
                     .map(|be| be.inflights.load(Ordering::Relaxed))
                     .min()
                     .unwrap();
 
-                let bes: &Vec<&Backend> = &self
-                    .backends
-                    .iter()
-                    .filter(|be| be.inflights.load(Ordering::Relaxed) == *min)
+                let bes: &Vec<&Backend> = &backends
+                    .into_iter()
+                    .filter(|be| (*be).inflights.load(Ordering::Relaxed) == min)
+                    .map(|be| *be)
                     .collect();
 
                 let mut rng = rand::rng();
                 let backend = bes.choose(&mut rng).unwrap();
 
-                backend
+                Some(backend)
             }
         }
     }
@@ -87,37 +106,43 @@ impl Service<Request<IncomingBody>> for LoadBalancer {
 
     fn call(&self, req: Request<IncomingBody>) -> Self::Future {
         let backend = self.select();
-        let uri = format!("http://{}{}", backend.host, req.uri());
 
-        let request_builder = self
-            .client
-            .request(req.method().clone(), uri)
-            .headers(req.headers().clone())
-            .body(reqwest::Body::wrap(req));
+        match backend {
+            None => panic!("WTF"),
+            Some(backend) => {
+                let uri = format!("http://{}{}", backend.host, req.uri());
 
-        let _ = backend.inflights.fetch_add(1, Ordering::Relaxed);
+                let request_builder = self
+                    .client
+                    .request(req.method().clone(), uri)
+                    .headers(req.headers().clone())
+                    .body(reqwest::Body::wrap(req));
 
-        println!("{:?}", backend);
+                let _ = backend.inflights.fetch_add(1, Ordering::Relaxed);
 
-        let tsk = Box::pin(async {
-            let backend_res = request_builder.send().await.unwrap();
+                println!("{:?}", backend);
 
-            let mut builder = Response::builder();
-            for (k, v) in backend_res.headers().iter() {
-                builder = builder.header(k, v);
+                let tsk = Box::pin(async {
+                    let backend_res = request_builder.send().await.unwrap();
+
+                    let mut builder = Response::builder();
+                    for (k, v) in backend_res.headers().iter() {
+                        builder = builder.header(k, v);
+                    }
+
+                    let response = builder
+                        .status(backend_res.status())
+                        .body(Full::new(backend_res.bytes().await.unwrap()))
+                        .unwrap();
+
+                    Ok(response)
+                });
+
+                let _ = backend.inflights.fetch_sub(1, Ordering::Relaxed);
+
+                tsk
             }
-
-            let response = builder
-                .status(backend_res.status())
-                .body(Full::new(backend_res.bytes().await.unwrap()))
-                .unwrap();
-
-            Ok(response)
-        });
-
-        let _ = backend.inflights.fetch_sub(1, Ordering::Relaxed);
-
-        tsk
+        }
     }
 }
 
@@ -125,6 +150,7 @@ impl Service<Request<IncomingBody>> for LoadBalancer {
 struct Backend {
     host: String,
     inflights: AtomicUsize,
+    healthy: bool,
 }
 
 #[cfg(test)]
@@ -140,26 +166,40 @@ mod tests {
     }
 
     #[test]
+    fn select_none() {
+        let lb = LoadBalancer::new(String::from("least_connection"), 2);
+        let backend = lb.select();
+        assert!(matches!(backend, None));
+    }
+
+    #[test]
     fn select_least_connection() {
         let mut lb = LoadBalancer::new(String::from("least_connection"), 2);
 
         {
+            let backend = &mut lb.backends[0];
+            backend.healthy = true;
+
             let backend = &mut lb.backends[1];
             backend.inflights = 1.into();
+            backend.healthy = true;
             assert_eq!(backend.host, "127.0.0.1:8081");
         }
 
-        let backend = lb.select();
+        let backend = lb.select().unwrap();
         assert_eq!(backend.inflights.load(Ordering::Relaxed), 0);
         assert_eq!(backend.host, "127.0.0.1:8080");
     }
 
     #[test]
     fn select_round_robin() {
-        let lb = LoadBalancer::new(String::from("round_robin"), 2);
+        let mut lb = LoadBalancer::new(String::from("round_robin"), 2);
+        for backend in &mut lb.backends {
+            backend.healthy = true;
+        }
 
-        assert_eq!(lb.select().host, "127.0.0.1:8080");
-        assert_eq!(lb.select().host, "127.0.0.1:8081");
-        assert_eq!(lb.select().host, "127.0.0.1:8080");
+        assert_eq!(lb.select().unwrap().host, "127.0.0.1:8080");
+        assert_eq!(lb.select().unwrap().host, "127.0.0.1:8081");
+        assert_eq!(lb.select().unwrap().host, "127.0.0.1:8080");
     }
 }
